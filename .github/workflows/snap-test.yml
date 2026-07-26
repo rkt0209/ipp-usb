@@ -302,6 +302,11 @@ jobs:
             [ -n "$port" ] && break
             sleep 1
           done
+          if [ -n "$port" ]; then
+            echo "Resolved port ${port} from DNS-SD (_ipp._tcp SRV record)"
+          else
+            echo "::warning::DNS-SD did not resolve; falling back to state file/log"
+          fi
           # Fall back to the private state file / log if DNS-SD did not resolve,
           # so the assertion cannot regress where browsing is unavailable.
           port="${port:-$(sudo grep -rhoE 'http-port[[:space:]]*=[[:space:]]*[0-9]+' \
