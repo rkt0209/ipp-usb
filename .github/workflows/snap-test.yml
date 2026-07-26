@@ -70,13 +70,14 @@ env:
   GO_MFP_MODEL: modeling/examples/Kyocera-ECOSYS-M2040dn.py
   # Host deps: the go-mfp emulator needs Python/JPEG/PNG for its cgo bits;
   # usbutils/linux-tools provide lsusb and the usbip client; avahi-daemon lets
-  # the confined snap publish over DNS-SD.  The snap itself is built in an
-  # isolated LXD container, so its build deps are not installed here.
+  # the confined snap publish over DNS-SD, and avahi-utils (avahi-browse) lets
+  # the test resolve the advertised port over DNS-SD.  The snap itself is built
+  # in an isolated LXD container, so its build deps are not installed here.
   APT_DEPS: >-
     gcc pkg-config make
     libjpeg-dev libpng-dev python3-dev
     linux-tools-generic linux-tools-common linux-tools-virtual
-    usbutils avahi-daemon
+    usbutils avahi-daemon avahi-utils
 
 jobs:
   snap-test:
@@ -289,10 +290,22 @@ jobs:
 
           # Assertion C - route a client request *through* the confined daemon's
           # TCP listener: client -> ipp-usb (TCP) -> USB -> emulator.  Resolve
-          # the per-device port from the state dir, fall back to the log, then
-          # to 60000.
-          port="$(sudo grep -rhoE 'http-port[[:space:]]*=[[:space:]]*[0-9]+' \
-            "$dev_dir" 2>/dev/null | grep -oE '[0-9]+' | head -1)"
+          # the port from DNS-SD (ipp-usb's public interface) rather than the
+          # private state file: avahi-browse -r gives the SRV record and field 9
+          # of the parseable output is the port.  This also asserts that the
+          # port ipp-usb *advertises* is the port it actually serves.  Retry a
+          # few seconds since publication can lag the daemon (re)start.
+          port=""
+          for i in $(seq 1 15); do
+            port="$(avahi-browse -rptk _ipp._tcp 2>/dev/null \
+              | awk -F';' '/^=/{print $9; exit}')"
+            [ -n "$port" ] && break
+            sleep 1
+          done
+          # Fall back to the private state file / log if DNS-SD did not resolve,
+          # so the assertion cannot regress where browsing is unavailable.
+          port="${port:-$(sudo grep -rhoE 'http-port[[:space:]]*=[[:space:]]*[0-9]+' \
+            "$dev_dir" 2>/dev/null | grep -oE '[0-9]+' | head -1)}"
           port="${port:-$(sudo grep -rhoE 'localhost:[0-9]+' "$log_dir" 2>/dev/null | head -1 | cut -d: -f2)}"
           port="${port:-60000}"
           # Use the "localhost" hostname, not 127.0.0.1: ipp-usb 302-redirects
