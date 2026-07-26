@@ -55,14 +55,15 @@ env:
   GO_MFP_MODEL: modeling/examples/Kyocera-ECOSYS-M2040dn.py
   # Build deps for ipp-usb (libusb + avahi) and for the go-mfp emulator
   # (adds Python/JPEG/PNG for its cgo bits).  usbutils/linux-tools provide
-  # lsusb and the usbip client; avahi-daemon lets ipp-usb publish over DNS-SD;
-  # cups-ipp-utils provides ipptool for the IPP round-trip assertion.
+  # lsusb and the usbip client; avahi-daemon lets ipp-usb publish over DNS-SD,
+  # avahi-utils (avahi-browse) lets the test resolve the advertised port over
+  # DNS-SD; cups-ipp-utils provides ipptool for the IPP round-trip assertion.
   APT_DEPS: >-
     gcc pkg-config make
     libusb-1.0-0-dev libavahi-client-dev
     libjpeg-dev libpng-dev python3-dev
     linux-tools-generic linux-tools-common linux-tools-virtual
-    usbutils avahi-daemon cups-ipp-utils
+    usbutils avahi-daemon avahi-utils cups-ipp-utils
 
 jobs:
   emulator-test:
@@ -194,10 +195,27 @@ jobs:
           # running (a backgrounded process does not survive into the next step).
           # Route a client request *through* ipp-usb's TCP listener:
           #     client -> ipp-usb (TCP) -> USB -> emulator
-          # The device port comes from http-min-port (default 60000); prefer the
-          # persisted state file, fall back to the debug log, then to 60000.
-          port="$(sudo grep -hoE 'http-port[[:space:]]*=[[:space:]]*[0-9]+' \
-            /var/ipp-usb/dev/* 2>/dev/null | grep -oE '[0-9]+' | head -1)"
+          # Resolve the port from DNS-SD (ipp-usb's public interface) rather
+          # than its private state file: avahi-browse -r gives the SRV record
+          # and field 9 of the parseable output is the port.  This also asserts
+          # the port ipp-usb *advertises* is the port it serves.  Retry a few
+          # seconds since publication can lag daemon start.
+          port=""
+          for i in $(seq 1 15); do
+            port="$(avahi-browse -rptk _ipp._tcp 2>/dev/null \
+              | awk -F';' '/^=/{print $9; exit}')"
+            [ -n "$port" ] && break
+            sleep 1
+          done
+          if [ -n "$port" ]; then
+            echo "Resolved port ${port} from DNS-SD (_ipp._tcp SRV record)"
+          else
+            echo "::warning::DNS-SD did not resolve; falling back to state file/log"
+          fi
+          # Fall back to the private state file / debug log if DNS-SD did not
+          # resolve, so the assertion cannot regress where browsing is absent.
+          port="${port:-$(sudo grep -hoE 'http-port[[:space:]]*=[[:space:]]*[0-9]+' \
+            /var/ipp-usb/dev/* 2>/dev/null | grep -oE '[0-9]+' | head -1)}"
           port="${port:-$(grep -oE 'localhost:[0-9]+' ippusb.log | head -1 | cut -d: -f2)}"
           port="${port:-60000}"
           # Use the "localhost" hostname, not 127.0.0.1: ipp-usb 302-redirects
