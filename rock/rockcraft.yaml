@@ -207,10 +207,8 @@ parts:
   utils:
     plugin: nil
     overlay-packages:
-      - python3
       - dbus
       - libnss-mdns
-      - nano
     override-prime: |
       set -eux
       craftctl default
